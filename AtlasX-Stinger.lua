@@ -624,6 +624,7 @@ pcall(function()
 end)
 
 local hopping = false
+local serverListCache = { data = nil, at = 0 }
 local function serverHop()
     if hopping then return end
     hopping = true
@@ -633,30 +634,35 @@ local function serverHop()
     prepareTeleportData()
 
     local placeId = game.PlaceId
+    if not serverListCache.data or (os.clock() - serverListCache.at) > 30 then
+        local raw = httpGet("https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100")
+        local decoded = nil
+        if raw then
+            local ok, parsed = pcall(function() return HttpService:JSONDecode(raw) end)
+            if ok then decoded = parsed end
+        end
+        serverListCache.data = decoded and decoded.data or {}
+        serverListCache.at = os.clock()
+    end
+
     local list = {}
-    local raw = httpGet("https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Asc&limit=100")
-    if raw then
-        local ok, decoded = pcall(function() return HttpService:JSONDecode(raw) end)
-        if ok and decoded and decoded.data then
-            for _, server in ipairs(decoded.data) do
-                if server.id and not _G.VisitedServers[server.id] and server.playing and server.maxPlayers then
-                    if server.playing < math.floor(server.maxPlayers * 0.8) and server.playing > 0 then
-                        table.insert(list, server)
-                    end
-                end
+    for _, server in ipairs(serverListCache.data) do
+        if server.id and not _G.VisitedServers[server.id] and server.playing and server.maxPlayers then
+            if server.playing < math.floor(server.maxPlayers * 0.8) and server.playing > 0 then
+                table.insert(list, server)
             end
         end
     end
 
-    task.wait(0.05)
     if #list > 0 then
         local picked = list[math.random(1, #list)]
         _G.VisitedServers[picked.id] = tick()
         print("[AtlasX · Stinger] Joining " .. picked.playing .. "/" .. picked.maxPlayers)
         pcall(function() TeleportService:TeleportToPlaceInstance(placeId, picked.id, localPlayer) end)
-        task.wait(4)
+        task.wait(0.2)
     else
         _G.VisitedServers = {}
+        serverListCache.data = nil
         if game.JobId then _G.VisitedServers[game.JobId] = tick() end
         pcall(function() TeleportService:Teleport(placeId, localPlayer) end)
     end
@@ -826,14 +832,27 @@ local function followAndKillVicious()
         end
     end)
 
+    local lastThorn = 0
     while settings.AutoKill do
-        task.wait(0.5)
+        task.wait(0.15)
+        -- collect Impale thorns during the fight, but never stop hunting Vicious
+        if settings.RushThorn and os.clock() - lastThorn > 1 then
+            local thorn = findThorn()
+            if thorn then
+                lastThorn = os.clock()
+                stats.Status = "Collecting thorn"
+                teleportTo(thorn.Position + Vector3.new(0, 2, 0))
+                _G.ThornsCollected = (_G.ThornsCollected or 0) + 1
+                say("AtlasX · Stinger", "Thorn collected")
+                task.wait(0.1)
+                if findVicious() then teleportTo(platform.Position + Vector3.new(0, 3, 0)) end
+            end
+        end
         if not findVicious() then
             pcall(function() conn:Disconnect() end)
             pcall(function() platform:Destroy() end)
             clearFlight()
             stats.Kills = stats.Kills + 1
-            _G.ThornsCollected = stats.Kills
             stats.Status = "Vicious killed — hopping"
             serverHop()
             return
@@ -842,7 +861,7 @@ local function followAndKillVicious()
         if not h or h.Health <= 0 then
             local charAdded = localPlayer.CharacterAdded:Wait()
             pcall(function() charAdded:WaitForChild("HumanoidRootPart", 20) end)
-            task.wait(0.5)
+            task.wait(0.15)
             if findVicious() then teleportTo(platform.Position) end
         end
     end
@@ -853,7 +872,7 @@ end
 
 --[[ MAIN LOOP ]]
 if not game:IsLoaded() then game.Loaded:Wait() end
-task.wait(1.2)
+task.wait(0.3)
 if not localPlayer.Character then localPlayer.CharacterAdded:Wait() end
 pcall(function() localPlayer.Character:WaitForChild("HumanoidRootPart", 20) end)
 
@@ -863,7 +882,7 @@ end
 
 task.spawn(function()
     while true do
-        task.wait(0.3)
+        task.wait(0.15)
         if settings.AutoKill and findVicious() then
             claimAllHives()
             followAndKillVicious()
@@ -872,10 +891,10 @@ task.spawn(function()
             claimAllHives()
             stats.Status = "Rushing thorn"
             teleportTo(thorn.Position)
-            local deadline = tick() + 10
+            local deadline = tick() + 2
             local spawned = false
             while tick() < deadline do
-                task.wait(0.2)
+                task.wait(0.1)
                 if findVicious() then spawned = true break end
             end
             if spawned and settings.AutoKill then followAndKillVicious() else serverHop() end
@@ -883,7 +902,7 @@ task.spawn(function()
             serverHop()
         else
             stats.Status = "Waiting for Vicious"
-            task.wait(1.5)
+            task.wait(0.4)
             if not findVicious() and not findThorn() then serverHop() end
         end
     end
@@ -898,7 +917,7 @@ task.spawn(function()
             local p = hrp.Position
             if last and (p - last).Magnitude < 1 then
                 stuck = stuck + 1
-                if stuck >= 15 then serverHop() break end
+                if stuck >= 8 then serverHop() break end
             else
                 stuck = 0
             end
